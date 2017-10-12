@@ -22,55 +22,56 @@
 /*
  * replace this with declarations of any synchronization and other variables you need here
  */
-typedef struct Car {
-  Direction origin;
-  Direction destination;
-} Car;
- 
+
 // declarations for functions
-bool rightTurn(Car *car);
-bool carCrash(Car *car1, Car *car2);
+bool rightTurn(int car);
+bool carCrash(int car1);
  
  
-bool rightTurn(Car *car) {
-  if (car->origin == north && car->destination == west) {
+bool rightTurn(int car) {
+  if (car/4 == north && car %4 == west) {
     return true;
   }
-  else if (car->origin == south && car->destination == east) {
+  else if (car/4 == south && car %4 == east) {
     return true;
   }
-  else if (car->origin == east && car->destination == north) {
+  else if (car/4 == east && car %4 == north) {
     return true;
   }
-  else if (car->origin == west && car->destination == south) {
+  else if (car/4 == west && car %4 == south) {
     return true;
   }
   return false;
 }
  
-bool carCrash(Car *car1, Car *car2) {
-  if (car1->origin == car2->origin) {
-    return false;
-  }
-  else if ((car1->origin == car2->destination) && (car1->destination == car2->origin)) {
-    return false;
-  }
-  else if (car1->destination != car2->destination) {
-    if (rightTurn(car1) || rightTurn(car2)) {
-      return false;
-    }
-    return true;
-  }
-  return true;
-}
- 
-struct array* a;
+
 static struct lock *intersectionLock;
 static struct cv* northCV;
 static struct cv* southCV;
 static struct cv* eastCV;
 static struct cv* westCV;
- 
+static int carCount[16] = {0};
+
+
+bool carCrash(int car1) {
+  for (int i=0; i<16; i++) {
+    if (carCount[i]>0) {
+      int car2 = i;
+      KASSERT(i%5 != 0);
+      if (car1/4 == car2/4) {    
+      }
+      else if ((car1/4 == car2 %4) && (car1 %4 == car2/4)) {
+      }
+      else if (car1 %4 != car2 %4 && (rightTurn(car1) || rightTurn(car2))) {
+      }
+      else {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /*
  * The simulation driver will call this function once before starting
  * the simulation
@@ -82,15 +83,13 @@ void
 intersection_sync_init(void)
 {
   /* replace this default implementation with your own implementation */
-  a = array_create();
-  array_init(a);
- 
+
   intersectionLock = lock_create("intersectionLock");
   northCV = cv_create("northCV");
   southCV = cv_create("southCV");
   eastCV = cv_create("eastCV");
   westCV = cv_create("westCV");
- 
+
   return;
 }
  
@@ -104,7 +103,6 @@ intersection_sync_init(void)
 void
 intersection_sync_cleanup(void)
 {
-  array_destroy(a);
   lock_destroy(intersectionLock);
   cv_destroy(northCV);
   cv_destroy(southCV);
@@ -129,37 +127,32 @@ intersection_sync_cleanup(void)
 void
 intersection_before_entry(Direction origin, Direction destination)
 {
-  lock_acquire(intersectionLock);
+  
  
-  Car *newCar = kmalloc(sizeof(struct Car));
-  newCar->origin = origin;
-  newCar->destination = destination;
+  int newCar = origin*4 + destination;
+  KASSERT(newCar < 16);
  
   bool crash=true;
+  lock_acquire(intersectionLock);
   while (crash) {
-    crash=false;
-    for (unsigned int i=0; i<array_num(a); i++) {
-      if (carCrash(newCar, array_get(a, i))) {
-        crash=true;
-        break;
+      crash=carCrash(newCar);
+
+      if (crash) {
+        if (destination == north) {
+          cv_wait(northCV, intersectionLock);
+        }
+        else if (destination == south) {
+          cv_wait(southCV, intersectionLock);
+        }
+        else if (destination == east) {
+          cv_wait(eastCV, intersectionLock);
+        }
+        else {
+          cv_wait(westCV, intersectionLock);
+        }
       }
-    }
-    if (crash) {
-      if (destination == north) {
-        cv_wait(northCV, intersectionLock);
-      }
-      else if (destination == south) {
-        cv_wait(southCV, intersectionLock);
-      }
-      else if (destination == east) {
-        cv_wait(eastCV, intersectionLock);
-      }
-      else {
-        cv_wait(westCV, intersectionLock);
-      }
-    }
   }
-  array_add(a, newCar, NULL);
+  carCount[newCar]++;
   lock_release(intersectionLock);
 }
  
@@ -179,35 +172,27 @@ void
 intersection_after_exit(Direction origin, Direction destination)
 {
   lock_acquire(intersectionLock);
- 
-  for (unsigned int i=0; i<array_num(a); i++) {
-    Car *curCar = array_get(a, i);
-    if (curCar->origin == origin && curCar->destination == destination) { 
-      if (rightTurn(curCar)) { // special case for removal of right turning cars
-        if (destination == north) {
-          cv_broadcast(northCV, intersectionLock);
-        }
-        else if (destination == south) {
-          cv_broadcast(southCV, intersectionLock);
-        }
-        else if (destination == east) {
-          cv_broadcast(eastCV, intersectionLock);
-        }
-        else {
-          cv_broadcast(westCV, intersectionLock);
-        }
-      }
-      else { // all other cars
-        cv_broadcast(northCV, intersectionLock);
-        cv_broadcast(southCV, intersectionLock);
-        cv_broadcast(eastCV, intersectionLock);
-        cv_broadcast(westCV, intersectionLock);
-      }
-
-      array_remove(a, i);
-      break;
+  carCount[origin*4 + destination]--;
+  if (rightTurn(curCar)) { // special case for removal of right turning cars
+    if (destination == north) {
+      cv_broadcast(northCV, intersectionLock);
+    }
+    else if (destination == south) {
+      cv_broadcast(southCV, intersectionLock);
+    }
+    else if (destination == east) {
+      cv_broadcast(eastCV, intersectionLock);
+    }
+    else {
+      cv_broadcast(westCV, intersectionLock);
     }
   }
- 
+  else { // all other cars
+    cv_broadcast(northCV, intersectionLock);
+    cv_broadcast(southCV, intersectionLock);
+    cv_broadcast(eastCV, intersectionLock);
+    cv_broadcast(westCV, intersectionLock);
+  }
   lock_release(intersectionLock);
 }
+
