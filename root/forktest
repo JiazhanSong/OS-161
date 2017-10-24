@@ -1,0 +1,2 @@
+#!/bin/bash
+sys161 kernel-ASST2 "p uw-testbin/onefork"

@@ -173,7 +173,7 @@ intersection_after_exit(Direction origin, Direction destination)
 {
   lock_acquire(intersectionLock);
   carCount[origin*4 + destination]--;
-  if (rightTurn(curCar)) { // special case for removal of right turning cars
+  if (rightTurn(origin*4 + destination)) { // special case for removal of right turning cars
     if (destination == north) {
       cv_broadcast(northCV, intersectionLock);
     }

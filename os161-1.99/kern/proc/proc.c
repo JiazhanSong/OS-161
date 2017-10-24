@@ -50,6 +50,15 @@
 #include <vfs.h>
 #include <synch.h>
 #include <kern/fcntl.h>  
+#include "opt-A2.h"
+#include <limits.h> // new
+#include <kern/errno.h>
+#include <thread.h>
+
+struct array *processes; 
+struct cv *waitQ;
+struct lock *arrayLock;
+struct lock *processGenLock;
 
 /*
  * The process for the kernel; this holds all the kernel-only threads.
@@ -69,7 +78,26 @@ static struct semaphore *proc_count_mutex;
 struct semaphore *no_proc_sem;   
 #endif  // UW
 
+struct processInfo* findProcess(pid_t pid) {
+	struct processInfo* p; 
 
+	for (unsigned int i = 0; i < array_num(processes); i++)	{
+		p=array_get(processes, i);
+		if (p->process == pid) { return p;}
+	}
+	return NULL;
+}
+
+void removeProcess(pid_t pid) {
+	struct processInfo* p; 
+
+	for (unsigned int i = 0; i < array_num(processes); i++) {
+		p = array_get(processes, i);
+		if (p->process == pid) {
+			array_remove(processes, i);
+		}
+	}
+}
 
 /*
  * Create a proc structure.
@@ -193,6 +221,14 @@ proc_destroy(struct proc *proc)
 void
 proc_bootstrap(void)
 {
+	#if OPT_A2
+	arrayLock = lock_create("arrayLock");
+  processGenLock = lock_create("processGenLock");
+  waitQ = cv_create("waitQ");
+	processes = array_create();
+  array_init(processes);
+
+	#endif
   kproc = proc_create("[kernel]");
   if (kproc == NULL) {
     panic("proc_create for kproc failed\n");
@@ -226,6 +262,31 @@ proc_create_runprogram(const char *name)
 	if (proc == NULL) {
 		return NULL;
 	}
+
+	#if OPT_A2
+	lock_acquire(processGenLock);
+	pid_t potentialPID = -1;
+	for(int i= PID_MIN; i <= PID_MAX; i++) {
+		if (findProcess(i) == NULL) {
+			potentialPID = i;
+			break;
+		}
+	}
+	proc->pid = potentialPID;
+
+	struct processInfo* p=kmalloc(sizeof(struct processInfo));
+
+	p->process = potentialPID;
+	p->parent = -1;
+	p->active = true;
+	p->exitStatus = -1;
+
+	lock_release(processGenLock);
+
+	lock_acquire(arrayLock);
+	array_add(processes,p, NULL);
+	lock_release(arrayLock);
+	#endif
 
 #ifdef UW
 	/* open the console - this should always succeed */
@@ -270,7 +331,6 @@ proc_create_runprogram(const char *name)
 	proc_count++;
 	V(proc_count_mutex);
 #endif // UW
-
 	return proc;
 }
 

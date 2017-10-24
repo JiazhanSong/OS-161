@@ -35,7 +35,7 @@
 #include <thread.h>
 #include <current.h>
 #include <syscall.h>
-
+#include <opt-A2.h>
 
 /*
  * System call dispatcher.
@@ -129,6 +129,10 @@ syscall(struct trapframe *tf)
 			    (int)tf->tf_a2,
 			    (pid_t *)&retval);
 	  break;
+	// Assignment 2 addition
+	case SYS_fork:
+		err = sys_fork(tf, (pid_t *)&retval);
+	  break;
 #endif // UW
 
 	    /* Add stuff here */
@@ -179,5 +183,18 @@ syscall(struct trapframe *tf)
 void
 enter_forked_process(struct trapframe *tf)
 {
+	#if OPT_A2
+
+	struct trapframe tf2 = *tf; // team fortress 2!
+	kfree(tf);
+
+	tf2.tf_v0 = 0;
+	tf2.tf_a3 = 0;
+	tf2.tf_epc += 4; // incrementing pc
+
+	mips_usermode(&tf2);
+
+	#else
 	(void)tf;
+	#endif
 }
