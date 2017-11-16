@@ -12,6 +12,10 @@
 #include <synch.h>
 #include <machine/trapframe.h>
 #include <opt-A2.h>
+#include <limits.h>
+#include <kern/fcntl.h>
+#include <vfs.h>
+#include <test.h>
 
   /* this implementation of sys__exit does not do anything with the exit code */
   /* this needs to be fixed to get exit() and waitpid() working properly */
@@ -196,3 +200,97 @@ int sys_fork(struct trapframe* tf, pid_t* retval) {
 
   return 0;
 }
+
+int sys_execv(char* progname, char** args) {
+ // CHECK FOR ERRORS
+  if (progname == NULL || args == NULL) {
+    return EFAULT;
+  }
+  if (strlen(progname) > PATH_MAX){
+    return E2BIG;
+  }
+
+  // see runprogram.c
+  int result;
+  struct addrspace *as;
+  struct addrspace *oldas;
+  struct vnode *v;
+  vaddr_t entrypoint, stackptr;
+
+
+  int argc = 0;
+  if (args != NULL) {
+    while (args[argc] != NULL) {
+      argc++;
+    }
+  }
+
+  char** argsMem = kmalloc((argc + 1) * sizeof(char));
+  // set null terminator
+  argsMem[argc] = NULL;
+
+  for (int i = 0; i < argc; i++) {
+    argsMem[i] = kmalloc((strlen(args[i]) + 1) * sizeof(char));
+    copyinstr((userptr_t)args[i], argsMem[i], strlen(args[i]) + 1, NULL);
+  }
+
+  char* temp = kstrdup(progname);
+  if (temp == NULL) { return ENOMEM;}
+
+  result = vfs_open(temp, O_RDONLY, 0, &v);
+  if (result) { 
+    kfree(temp);
+    return result;
+  }
+  kfree(temp);
+
+  // make new address space
+  as = as_create();
+  if (as == NULL) { return ENOMEM;}
+
+  oldas=curproc_setas(as);
+  as_activate();
+
+  result = load_elf(v, &entrypoint);
+  if (result) {
+    vfs_close(v);
+    return result;
+  }
+  vfs_close(v);
+
+  result = as_define_stack(as, &stackptr);
+  if (result) { return result;}
+  // must increment stack pointer to be 8-byte aligned, see hint page for a2b
+  stackptr -= stackptr % 8;
+
+  vaddr_t len;
+  vaddr_t argStack[argc + 1];
+  argStack[argc]=0;
+
+ // actual argument strings
+  for (int i = argc-1; i >= 0; i--) {
+    len = strlen(argsMem[i]) + 1;
+    stackptr -= len;
+    result = copyoutstr(argsMem[i], (userptr_t)stackptr, ARG_MAX,  &len);
+    if (result) { return result;}
+
+    argStack[i] = stackptr;
+  }
+
+  // pointers to copied arguments, note they are 4-byte items
+  // so stackptr must be incremented to be properly aligned
+  stackptr -= stackptr % 4;
+  for (int i = argc; i >= 0; i--) {
+    stackptr -= sizeof(vaddr_t);
+
+    result = copyout(&argStack[i],(userptr_t)stackptr, sizeof(vaddr_t));
+    if (result) { return result;}
+  }
+
+  userptr_t userAddress = (userptr_t)stackptr;
+  enter_new_process(argc, userAddress, stackptr, entrypoint);
+  
+  panic("function enter_new_process in execv failed @proc_syscalls.c");
+  return EINVAL;
+}
+
