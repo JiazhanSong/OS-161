@@ -37,6 +37,8 @@
 #include <mips/tlb.h>
 #include <addrspace.h>
 #include <vm.h>
+//new
+#include <syscall.h>
 
 /*
  * Dumb MIPS-only "VM system" that is intended to only be just barely
@@ -45,6 +47,20 @@
 
 /* under dumbvm, always have 48k of user stack */
 #define DUMBVM_STACKPAGES    12
+
+// COREMAP DATA STRUCTURE
+struct singleMap {
+	paddr_t paddr;
+  bool used;
+};
+
+struct coreMap {
+	int size;
+  struct singleMap* entries;
+	struct spinlock lck;
+};
+
+
 
 /*
  * Wrap rma_stealmem in a spinlock.
@@ -55,6 +71,9 @@ void
 vm_bootstrap(void)
 {
 	/* Do nothing. */
+
+
+
 }
 
 static
@@ -113,6 +132,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	uint32_t ehi, elo;
 	struct addrspace *as;
 	int spl;
+	bool dirty =false;
 
 	faultaddress &= PAGE_FRAME;
 
@@ -121,7 +141,8 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	switch (faulttype) {
 	    case VM_FAULT_READONLY:
 		/* We always create pages read-write, so we can't get this */
-		panic("dumbvm: got VM_FAULT_READONLY\n");
+		return 2;
+		//panic("dumbvm: got VM_FAULT_READONLY\n");
 	    case VM_FAULT_READ:
 	    case VM_FAULT_WRITE:
 		break;
@@ -169,6 +190,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	stacktop = USERSTACK;
 
 	if (faultaddress >= vbase1 && faultaddress < vtop1) {
+		dirty = true;
 		paddr = (faultaddress - vbase1) + as->as_pbase1;
 	}
 	else if (faultaddress >= vbase2 && faultaddress < vtop2) {
@@ -194,15 +216,29 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 		}
 		ehi = faultaddress;
 		elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+		if (dirty && as->done == 1) {
+ 			elo &= ~TLBLO_DIRTY;
+ 		}
+
 		DEBUG(DB_VM, "dumbvm: 0x%x -> 0x%x\n", faultaddress, paddr);
 		tlb_write(ehi, elo, i);
 		splx(spl);
 		return 0;
 	}
 
-	kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
+	if (as->done && dirty) {
+		elo = paddr | TLBLO_VALID;
+	}
+  else {
+	 elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+	}
+	
+	ehi = faultaddress;
+	tlb_random(ehi, elo);
+  splx(spl);
+	//kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
 	splx(spl);
-	return EFAULT;
+	return 0;
 }
 
 struct addrspace *
@@ -220,6 +256,7 @@ as_create(void)
 	as->as_pbase2 = 0;
 	as->as_npages2 = 0;
 	as->as_stackpbase = 0;
+	as->done = false;
 
 	return as;
 }
@@ -338,7 +375,7 @@ as_prepare_load(struct addrspace *as)
 int
 as_complete_load(struct addrspace *as)
 {
-	(void)as;
+	(void)(as);
 	return 0;
 }
 

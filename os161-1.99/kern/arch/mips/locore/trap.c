@@ -39,6 +39,10 @@
 #include <vm.h>
 #include <mainbus.h>
 #include <syscall.h>
+#include <proc.h>
+#include <synch.h>
+#include <kern/wait.h>
+#include <addrspace.h>
 
 
 /* in exception.S */
@@ -73,6 +77,8 @@ static
 void
 kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 {
+	(void)(epc);
+	(void)(vaddr);
 	int sig = 0;
 
 	KASSERT(code < NTRAPCODES);
@@ -85,7 +91,7 @@ kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 		KASSERT(0);
 		sig = SIGABRT;
 		break;
-	    case EX_MOD:
+	    case EX_MOD: // /* TLB Modify (write to read-only page) */
 	    case EX_TLBL:
 	    case EX_TLBS:
 		sig = SIGSEGV;
@@ -108,13 +114,48 @@ kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 		break;
 	}
 
-	/*
-	 * You will probably want to change this.
-	 */
+	struct addrspace *as;
+  struct proc *p = curproc;
 
-	kprintf("Fatal user mode trap %u sig %d (%s, epc 0x%x, vaddr 0x%x)\n",
+
+  lock_acquire(arrayLock);
+  struct processInfo* pInfo= findProcess(curproc->pid);
+  pInfo->active = false;
+  pInfo->exitStatus = _MKWAIT_SIG(sig);
+
+  for (unsigned int i=0; i<array_num(processes); i++) {
+    pInfo = array_get(processes,i);
+
+    if (pInfo->parent == curproc->pid && pInfo->active == false) {
+      removeProcess(pInfo->process);
+    }
+    if (pInfo->parent == curproc->pid) {
+      pInfo->parent = -1;
+    }
+  }
+  pInfo= findProcess(curproc->pid);
+  if (pInfo->parent == -1) { // no parent
+    removeProcess(curproc->pid);
+  }
+  else {
+    cv_broadcast(waitQ,arrayLock);
+  }
+
+  lock_release(arrayLock);
+
+
+  KASSERT(curproc->p_addrspace != NULL);
+  as_deactivate();
+  as = curproc_setas(NULL);
+  as_destroy(as);
+  proc_remthread(curthread);
+  proc_destroy(p);
+  
+  thread_exit();
+
+	/*kprintf("Fatal user mode trap %u sig %d (%s, epc 0x%x, vaddr 0x%x)\n",
 		code, sig, trapcodenames[code], epc, vaddr);
-	panic("I don't know how to handle this\n");
+	panic("I don't know how to handle this\n");*/
 }
 
 /*
@@ -233,6 +274,8 @@ mips_trap(struct trapframe *tf)
 	case EX_MOD:
 		if (vm_fault(VM_FAULT_READONLY, tf->tf_vaddr)==0) {
 			goto done;
+		}
+		else {
 		}
 		break;
 	case EX_TLBL:
